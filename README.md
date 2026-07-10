@@ -1,6 +1,6 @@
 # yt-weekly-review
 
-Watches a list of YouTube channels, summarizes every new full episode with the Gemini API, and emails one weekly review — three timestamped key takes per video, each linking straight to that moment. Runs entirely on GitHub Actions at $0/month (free tiers of the YouTube Data API, the Gemini API, and Actions).
+Watches a list of YouTube channels, summarizes every new full episode with the Gemini API, and emails one weekly review — three timestamped key takes per video, each linking straight to that moment. Runs entirely on GitHub Actions at no cost (free tiers of the YouTube Data API, the Gemini API, and Actions).
 
 One entry from a weekly email:
 
