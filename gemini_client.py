@@ -167,6 +167,18 @@ def summarize_video(video_id, duration_seconds, config, api_key, debug=False):
     return final
 
 
+def estimate_request_count(duration_seconds, config):
+    """How many Gemini requests summarize_video() will spend on this video
+    (no retries counted — retries are resilience, not planned spend).
+    Used by collect.py to enforce the daily request budget before any
+    request is made."""
+    single_max = config["single_request_max_minutes"] * 60
+    if duration_seconds <= single_max:
+        return 1
+    spans = _chunk_spans(duration_seconds, config["chunk_minutes"] * 60)
+    return len(spans) + 1  # + 1 merge call
+
+
 def _chunk_spans(duration, chunk_seconds, min_tail=300):
     """Split into chunk-sized (start, end) spans; a tail shorter than
     min_tail is absorbed into the previous span rather than wasting one
