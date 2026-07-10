@@ -20,6 +20,7 @@ AI Studio 2026-07-10: 5 RPM, ~250K TPM, 20 RPD):
 
 import json
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -133,7 +134,15 @@ def summarize_video(video_id, duration_seconds, config, api_key, debug=False):
         final = candidates
     else:
         time.sleep(pacing)
-        final = _merge_takes(candidates, config, api_key, debug)
+        try:
+            final = _merge_takes(candidates, config, api_key, debug)
+        except GeminiError as err:
+            # The chunk requests are the expensive part; a merge outage
+            # must not throw their results away (observed live: all four
+            # chunks fine, text-only merge repeatedly 503).
+            print("warning: merge failed (%s); using deterministic fallback pick"
+                  % err, file=sys.stderr)
+            final = _fallback_pick(candidates)
 
     for take in final:
         take["t_seconds"] = max(0, min(take["t_seconds"], duration_seconds))
@@ -194,7 +203,23 @@ def _merge_takes(candidates, config, api_key, debug):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": _generation_config(config, media=False),
     }
-    return _call_and_parse(config, body, api_key, 3, "merge", debug)
+    # Three attempts here (vs two everywhere else): the burn guards exist
+    # to protect the expensive video requests, and this call costs a few
+    # thousand text tokens while its failure would waste 4+ video requests.
+    return _call_and_parse(config, body, api_key, 3, "merge", debug, attempts=3)
+
+
+def _fallback_pick(candidates):
+    """Deterministic stand-in when the merge call is unavailable: sort all
+    candidate takes chronologically and keep the first, middle and last —
+    coverage across the whole video with no model involved. Less curated
+    than a model merge (no dedup or quality ranking); callers log when
+    this path was taken."""
+    if len(candidates) < 3:
+        raise GeminiError("merge unavailable and only %d candidate take(s)"
+                          % len(candidates))
+    ordered = sorted(candidates, key=lambda t: t["t_seconds"])
+    return [ordered[0], ordered[len(ordered) // 2], ordered[-1]]
 
 
 def _generation_config(config, media=True):
@@ -211,12 +236,12 @@ def _generation_config(config, media=True):
     return gen
 
 
-def _call_and_parse(config, body, api_key, want, label, debug):
-    """One request with a single bounded retry (the brief's token-burn
-    guard: never more than 2 attempts for any request). 400s are not
-    retried — a deterministic rejection won't get better."""
+def _call_and_parse(config, body, api_key, want, label, debug, attempts=2):
+    """One request with bounded retries (default 2 attempts total — the
+    brief's token-burn guard; only the cheap merge call opts into 3).
+    400s are not retried — a deterministic rejection won't get better."""
     last_err = None
-    for attempt in (1, 2):
+    for attempt in range(1, attempts + 1):
         try:
             resp = _generate(config["gemini_model"], body, api_key)
             if debug:
@@ -242,9 +267,9 @@ def _call_and_parse(config, body, api_key, want, label, debug):
             last_err = GeminiError("HTTP %d for %s: %s" % (err.code, label, detail))
         except (urllib.error.URLError, TimeoutError, OSError) as err:
             last_err = GeminiError("network error for %s: %s" % (label, err))
-        if attempt == 1:
-            # On 429 this doubles as backoff; minimum 30s keeps the retry
-            # itself from contributing to a rate-limit spiral.
+        if attempt < attempts:
+            # On 429/503 this doubles as backoff; minimum 30s keeps the
+            # retry itself from contributing to a rate-limit spiral.
             time.sleep(max(config["request_pacing_seconds"], 30))
     raise last_err
 
