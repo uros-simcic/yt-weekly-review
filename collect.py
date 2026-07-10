@@ -1,10 +1,10 @@
 """Daily collector: list new videos on the configured channels, decide
 which ones to summarize, and report.
 
-Phase 1 scope: listing + filtering + dry-run report only. Summarization
-(gemini_client, Phase 2) and the persistent state ledger (Phase 3) are
-not wired in yet — running without --dry-run refuses instead of
-pretending to work.
+Current scope: the dry-run listing report plus --summarize-one, the
+single-video summarization test. The full daily summarize loop and the
+persistent state ledger arrive in Phase 3 — running without either flag
+refuses instead of pretending to work.
 """
 
 import argparse
@@ -13,6 +13,7 @@ import json
 import os
 import sys
 
+import gemini_client
 import youtube_client as yt
 
 # Every value we print that could contain an error message goes through
@@ -126,14 +127,50 @@ def collect_channel(channel, config, processed, cutoff, api_key):
     return candidates, skips
 
 
+def summarize_one(video_id, config):
+    """Phase 2 acceptance test: summarize exactly one video and print the
+    takes with code-built timestamp links. No state is read or written, so
+    repeated test runs cost only Gemini requests, never duplicates."""
+    yt_key = os.environ.get("YT_API_KEY")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not yt_key or not gemini_key:
+        sys.exit("collect.py: --summarize-one needs YT_API_KEY and GEMINI_API_KEY")
+    if not yt.VIDEO_ID_RE.match(video_id):
+        sys.exit("collect.py: %r is not a valid video id" % video_id)
+
+    video = yt.fetch_video_details([video_id], yt_key).get(video_id)
+    if video is None:
+        sys.exit("collect.py: video %s not found or failed validation" % video_id)
+    print("test video: %s  (%s)" % (video["title"], fmt_duration(video["duration_seconds"])))
+
+    takes = gemini_client.summarize_video(
+        video_id, video["duration_seconds"], config, gemini_key, debug=True)
+    print("\ntakes:")
+    for take in takes:
+        # Links are constructed here, by code, from the validated id and an
+        # integer — never from model output.
+        print("  [%s] %s" % (fmt_duration(take["t_seconds"]), take["text"]))
+        print("        https://www.youtube.com/watch?v=%s&t=%ds"
+              % (video_id, take["t_seconds"]))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true",
                         help="list and filter only; no Gemini calls, no state writes")
+    parser.add_argument("--summarize-one", metavar="VIDEO_ID",
+                        help="summarize one video and print its takes (Phase 2 test)")
     args = parser.parse_args()
+
+    if args.summarize_one:
+        try:
+            summarize_one(args.summarize_one, load_config())
+        except gemini_client.GeminiError as exc:
+            sys.exit("collect.py: summarization failed: %s" % scrub(str(exc)))
+        return
     if not args.dry_run:
-        sys.exit("collect.py: only --dry-run exists so far (Phase 1); "
-                 "summarization arrives in Phase 2")
+        sys.exit("collect.py: use --dry-run or --summarize-one; the full "
+                 "summarize loop arrives in Phase 3")
 
     api_key = os.environ.get("YT_API_KEY")
     if not api_key:
@@ -171,13 +208,15 @@ def main():
         for video in candidates:
             verdict = ("WOULD SUMMARIZE" if video["video_id"] in selected_ids
                        else "deferred to next run (budget)")
-            print("  [%s]  %s  %s  %s" % (verdict, video["published_at"],
-                                          fmt_duration(video["duration_seconds"]),
-                                          video["title"]))
+            print("  [%s]  %s  %s  %s  %s" % (verdict, video["video_id"],
+                                              video["published_at"],
+                                              fmt_duration(video["duration_seconds"]),
+                                              video["title"]))
         for video, reason in skips:
-            print("  [skip: %s]  %s  %s  %s" % (reason, video["published_at"],
-                                                fmt_duration(video["duration_seconds"]),
-                                                video["title"]))
+            print("  [skip: %s]  %s  %s  %s  %s" % (reason, video["video_id"],
+                                                    video["published_at"],
+                                                    fmt_duration(video["duration_seconds"]),
+                                                    video["title"]))
 
     print("\ntotals: %d candidate(s), %d selected (%.1fh of %sh budget), %d deferred"
           % (len(all_candidates), len(selected), budget_hours,
