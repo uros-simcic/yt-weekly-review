@@ -3,8 +3,8 @@
 # next to your instance (config + state) and runs the collector from the
 # instance root, so config.json and state/ resolve to YOUR files.
 #
-# Cron trigger and state commits arrive in a later phase — for now this
-# is manual dispatch only.
+# Manual dispatch only for now — the daily cron trigger is added once the
+# whole project is complete, as its own explicit change.
 name: collect
 
 on:
@@ -19,10 +19,11 @@ on:
         type: string
         default: ""
 
-# Least privilege: reading the repo is all the dry run needs. The state
-# ledger phase raises this to contents: write for the state commits.
+# contents: write is needed for the state-commit step below (a real run
+# updates state/processed.json and state/summaries.json and pushes them
+# back, the only way the ledger survives past this ephemeral runner).
 permissions:
-  contents: read
+  contents: write
 
 # One pipeline run at a time, queued rather than cancelled: overlapping
 # runs are one of the duplication/token-burn risks the design rules out.
@@ -60,4 +61,20 @@ jobs:
             python engine/collect.py --dry-run
           else
             python engine/collect.py
+          fi
+      # Runs regardless of the step above's outcome: run_daily() saves
+      # state in a finally block even on a mid-run crash, and dry runs /
+      # single-video tests never touch state/ at all, so this is a no-op
+      # for them (nothing staged -> nothing committed).
+      - name: Commit state changes
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          if git diff --staged --quiet; then
+            echo "no state changes to commit"
+          else
+            git commit -m "chore(state): $(date -u +%Y-%m-%d) [skip ci]"
+            git push
           fi
