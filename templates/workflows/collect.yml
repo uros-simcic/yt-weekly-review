@@ -14,6 +14,10 @@ on:
         description: "List and filter only (no Gemini calls)"
         type: boolean
         default: true
+      test_video_id:
+        description: "Summarize this one video id and print takes (overrides dry_run)"
+        type: string
+        default: ""
 
 # Least privilege: reading the repo is all the dry run needs. The state
 # ledger phase raises this to contents: write for the state commits.
@@ -46,9 +50,13 @@ jobs:
       - name: Run collector
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DRY_RUN: ${{ inputs.dry_run }}
+          TEST_VIDEO_ID: ${{ inputs.test_video_id }}
         run: |
-          if [ "$DRY_RUN" = "true" ]; then
+          if [ -n "$TEST_VIDEO_ID" ]; then
+            python engine/collect.py --summarize-one "$TEST_VIDEO_ID"
+          elif [ "$DRY_RUN" = "true" ]; then
             python engine/collect.py --dry-run
           else
             python engine/collect.py
