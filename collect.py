@@ -37,6 +37,14 @@ def scrub(text):
     return text
 
 
+def gh_warning(message):
+    """Print a GitHub Actions '::warning::' annotation: surfaces as a
+    visible marker on the run's summary page instead of being buried in
+    the log, for things worth a human's attention (not routine, expected
+    outcomes like a first-attempt retry)."""
+    print("::warning::%s" % message, file=sys.stderr)
+
+
 def load_config(path="config.json"):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
@@ -56,6 +64,13 @@ def load_processed(path=PROCESSED_PATH):
             return json.load(f)
     except FileNotFoundError:
         return {}
+    except json.JSONDecodeError as exc:
+        # Fail loud rather than defaulting to {}: silently treating
+        # corrupted state as empty would risk re-summarizing and
+        # re-emailing everything already sent. State is version-controlled,
+        # so recovery is a git revert, not a code path.
+        sys.exit("collect.py: %s is corrupted (%s) — restore it from a "
+                 "previous git commit before running again" % (path, exc))
 
 
 def save_processed(processed, path=PROCESSED_PATH):
@@ -71,6 +86,9 @@ def load_summaries(path=SUMMARIES_PATH):
             return json.load(f)
     except FileNotFoundError:
         return []
+    except json.JSONDecodeError as exc:
+        sys.exit("collect.py: %s is corrupted (%s) — restore it from a "
+                 "previous git commit before running again" % (path, exc))
 
 
 def save_summaries(summaries, path=SUMMARIES_PATH):
@@ -192,8 +210,8 @@ def process_selected(selected, channel_by_id, config, processed, summaries, gemi
                     "status": "failed_permanent", "attempts": attempts,
                     "channel": channel_name, "title": video["title"], "reported": False,
                 }
-                print("warning: %s failed permanently after %d attempts: %s"
-                      % (video_id, attempts, scrub(str(err))), file=sys.stderr)
+                gh_warning("%s failed permanently after %d attempts: %s"
+                          % (video_id, attempts, scrub(str(err))))
             else:
                 processed[video_id] = {
                     "status": "pending_retry", "attempts": attempts,
@@ -230,8 +248,7 @@ def run_daily(config, yt_key, gemini_key):
         try:
             candidates, skips = collect_channel(channel, config, processed, cutoff, yt_key)
         except Exception as exc:  # noqa: BLE001 — one channel's failure must not kill the run
-            print("warning: channel %r failed: %s" % (channel["name"], scrub(str(exc))),
-                  file=sys.stderr)
+            gh_warning("channel %r failed: %s" % (channel["name"], scrub(str(exc))))
             continue
         for video in candidates:
             channel_by_id[video["video_id"]] = channel["name"]
@@ -282,7 +299,7 @@ def summarize_one(video_id, config):
         # Links are constructed here, by code, from the validated id and an
         # integer — never from model output.
         print("  [%s] %s" % (fmt_duration(take["t_seconds"]), take["text"]))
-        print("        https://www.youtube.com/watch?v=%s&t=%ds"
+        print("        https://www.youtube.com/watch?v=%s&t=%d"
               % (video_id, take["t_seconds"]))
 
 
@@ -327,8 +344,7 @@ def main():
         try:
             candidates, skips = collect_channel(channel, config, processed, cutoff, yt_key)
         except Exception as exc:  # noqa: BLE001 — deliberate catch-all at the channel boundary
-            print("warning: channel %r failed: %s" % (channel["name"], scrub(str(exc))),
-                  file=sys.stderr)
+            gh_warning("channel %r failed: %s" % (channel["name"], scrub(str(exc))))
             per_channel.append((channel, [], []))
             continue
         per_channel.append((channel, candidates, skips))
