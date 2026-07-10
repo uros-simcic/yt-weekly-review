@@ -83,13 +83,13 @@ _TAKES_SCHEMA = {
     "required": ["takes"],
 }
 
-# UNVERIFIED until the Phase 2 offset probe runs: whether timestamps for a
-# clipped request come back clip-relative or video-absolute. The prompt
-# explicitly asks for segment-relative values to make behavior
-# deterministic, and summarize_video() adds the chunk start on top. The
-# probe (a >1h test video; chunk 2's raw values must land in [0, chunk
-# length], not [start, end]) confirms or flips this. Result is recorded
-# here once observed.
+# VERIFIED 2026-07-10 on gemini-3.5-flash: timestamps for a clipped
+# request come back CLIP-RELATIVE. Probe: a 2h49m video split into 4
+# chunks; every non-first chunk returned raw t_seconds inside
+# [0, chunk length] (e.g. span 6000-9000s returned 1084/1243/2166), never
+# inside the absolute window. The prompt also explicitly asks for
+# segment-relative values, so behavior is pinned from both sides;
+# summarize_video() adds the chunk start offset on top.
 _CLIP_RELATIVE_TIMESTAMPS = True
 
 
