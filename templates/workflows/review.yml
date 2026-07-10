@@ -1,0 +1,70 @@
+# Instance workflow: copy this file into your private instance repo at
+# .github/workflows/review.yml. Builds and sends the weekly review email
+# from state/summaries.json, then commits the updated sent/reported flags.
+#
+# Manual dispatch only for now — the Sunday 07:00 UTC cron trigger is
+# added once the whole project is complete, as its own explicit change.
+name: review
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and print the email; do not send, do not mark sent"
+        type: boolean
+        default: true
+
+# contents: write is needed for the state-commit step below (a real send
+# flips sent/reported flags in state/ and pushes them back).
+permissions:
+  contents: write
+
+# One pipeline run at a time, queued rather than cancelled — shared with
+# collect's group so a review send can't race a collect state commit.
+concurrency:
+  group: yt-weekly-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Your instance: config.json + state/
+      - uses: actions/checkout@v4
+      # The engine: code only. Tracking master means instances always run
+      # the latest engine; point `repository:` (and optionally `ref:`) at
+      # your own copy if you'd rather pin.
+      - uses: actions/checkout@v4
+        with:
+          repository: uros-simcic/yt-weekly-review
+          path: engine
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run reviewer
+        env:
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_APP_PASSWORD: ${{ secrets.MAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python engine/review.py --dry-run
+          else
+            python engine/review.py
+          fi
+      # Runs regardless of the step above's outcome, mirroring collect.yml.
+      # A dry run never touches state/, so this is a no-op for it.
+      - name: Commit state changes
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          if git diff --staged --quiet; then
+            echo "no state changes to commit"
+          else
+            git commit -m "chore(state): $(date -u +%Y-%m-%d) [skip ci]"
+            git push
+          fi
