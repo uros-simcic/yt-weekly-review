@@ -55,7 +55,7 @@ Under active development. Working today: channel listing, filtering, and budget 
 
 ## See also
 
-[AI-daily-harvest](https://github.com/uros-simcic/AI-daily-harvest) — the same idea for AI news: RSS articles summarized by Mistral into one email every morning.
+[AI-daily-harvest](https://github.com/uros-simcic/AI-daily-harvest) — daily AI news harvest: fetches articles via RSS, summarizes with Mistral, emails the result.
 
 ## License
 
