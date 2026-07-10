@@ -7,6 +7,7 @@
   "single_request_max_minutes": 45,
   "max_videos_per_run": 8,
   "daily_video_hours_budget": 6,
+  "daily_request_budget": 15,
   "max_video_hours": 4,
   "max_attempts_per_video": 2,
   "request_pacing_seconds": 60,
