@@ -1,10 +1,16 @@
-"""Daily collector: list new videos on the configured channels, decide
-which ones to summarize, and report.
+"""Daily collector: list new videos on the configured channels, summarize
+new full episodes, and update the state ledger.
 
-Current scope: the dry-run listing report plus --summarize-one, the
-single-video summarization test. The full daily summarize loop and the
-persistent state ledger arrive in Phase 3 — running without either flag
-refuses instead of pretending to work.
+State lifecycle (state/processed.json, keyed by video id):
+  pending_retry    -> attempted, failed, attempts < max_attempts_per_video;
+                      NOT terminal, resurfaces as a candidate next run.
+  summarized       -> terminal; takes appended to state/summaries.json.
+  failed_permanent -> terminal; attempts hit max_attempts_per_video.
+  skipped_too_long -> terminal; duration > max_video_hours.
+Only the three terminal statuses stop a video from being reprocessed —
+pending_retry exists so a transient failure gets retried tomorrow with
+its attempt count intact instead of being silently dropped or retried
+forever.
 """
 
 import argparse
@@ -12,6 +18,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 
 import gemini_client
 import youtube_client as yt
@@ -35,14 +42,42 @@ def load_config(path="config.json"):
         return json.load(f)
 
 
-def load_processed(path=os.path.join("state", "processed.json")):
-    """The processed-ID ledger lands in Phase 3; reading it already
-    (empty when absent) keeps the filter logic complete and testable now."""
+PROCESSED_PATH = os.path.join("state", "processed.json")
+SUMMARIES_PATH = os.path.join("state", "summaries.json")
+
+# Only these stop classify() from offering the video again. pending_retry
+# is deliberately absent: it must resurface as a normal candidate.
+TERMINAL_STATUSES = {"summarized", "failed_permanent", "skipped_too_long"}
+
+
+def load_processed(path=PROCESSED_PATH):
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
+
+
+def save_processed(processed, path=PROCESSED_PATH):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(processed, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def load_summaries(path=SUMMARIES_PATH):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+
+def save_summaries(summaries, path=SUMMARIES_PATH):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(summaries, f, indent=2)
+        f.write("\n")
 
 
 def parse_utc(iso):
@@ -59,8 +94,9 @@ def fmt_duration(seconds):
 def classify(video, channel, config, processed, cutoff):
     """Return None if the video is a summarization candidate, else the
     skip reason. Order matters only for which reason gets reported."""
-    if video["video_id"] in processed:
-        return "already processed"
+    record = processed.get(video["video_id"])
+    if record and record.get("status") in TERMINAL_STATUSES:
+        return record["status"]
     if parse_utc(video["published_at"]) < cutoff:
         return "outside lookback window"
     if video["is_live_or_upcoming"]:
@@ -68,9 +104,7 @@ def classify(video, channel, config, processed, cutoff):
     if video["duration_seconds"] < channel["min_minutes"] * 60:
         return "shorter than min_minutes=%d" % channel["min_minutes"]
     if video["duration_seconds"] > config["max_video_hours"] * 3600:
-        # Distinct status: these get a one-line mention in the weekly
-        # email (Phase 4) instead of silently disappearing.
-        return "skipped_too_long (> %dh)" % config["max_video_hours"]
+        return "skipped_too_long"
     return None
 
 
@@ -81,21 +115,29 @@ def select_within_budgets(candidates, config):
     one) keeps ordering strictly oldest-first, so anything deferred today
     is automatically first in line tomorrow — the deferral queue costs
     nothing and nothing can starve.
+
+    Three independent budgets, any of which can stop selection:
+    max_videos_per_run, daily_video_hours_budget (the free-tier 8h/day
+    video cap, charged at full video length per the brief's conservative
+    rule), and daily_request_budget (the scarcer real constraint: 20
+    requests/day observed on the free tier).
     """
     candidates = sorted(candidates, key=lambda v: v["published_at"])
     selected = []
     budget_hours = 0.0
+    budget_requests = 0
     for video in candidates:
         video_hours = video["duration_seconds"] / 3600
-        # The 8h/day free cap may count the full video even when we send
-        # clipped chunks (unverified), so the budget conservatively
-        # charges full length per video.
+        video_requests = gemini_client.estimate_request_count(
+            video["duration_seconds"], config)
         if (len(selected) >= config["max_videos_per_run"]
-                or budget_hours + video_hours > config["daily_video_hours_budget"]):
+                or budget_hours + video_hours > config["daily_video_hours_budget"]
+                or budget_requests + video_requests > config["daily_request_budget"]):
             break
         selected.append(video)
         budget_hours += video_hours
-    return selected, candidates[len(selected):], budget_hours
+        budget_requests += video_requests
+    return selected, candidates[len(selected):], budget_hours, budget_requests
 
 
 def collect_channel(channel, config, processed, cutoff, api_key):
@@ -125,6 +167,96 @@ def collect_channel(channel, config, processed, cutoff, api_key):
         else:
             skips.append((video, reason))
     return candidates, skips
+
+
+def process_selected(selected, channel_by_id, config, processed, summaries, gemini_key):
+    """Summarize each selected video, updating processed/summaries in
+    place. One video's failure never stops the rest (per-video
+    try/except is the brief's isolation rule extended to summarization).
+    Pacing between videos reuses request_pacing_seconds; the last video
+    skips the trailing sleep since nothing follows it.
+    """
+    for i, video in enumerate(selected):
+        if i:
+            time.sleep(config["request_pacing_seconds"])
+        video_id = video["video_id"]
+        channel_name = channel_by_id[video_id]
+        prior_attempts = processed.get(video_id, {}).get("attempts", 0)
+        try:
+            takes = gemini_client.summarize_video(
+                video_id, video["duration_seconds"], config, gemini_key)
+        except gemini_client.GeminiError as err:
+            attempts = prior_attempts + 1
+            if attempts >= config["max_attempts_per_video"]:
+                processed[video_id] = {
+                    "status": "failed_permanent", "attempts": attempts,
+                    "channel": channel_name, "title": video["title"], "reported": False,
+                }
+                print("warning: %s failed permanently after %d attempts: %s"
+                      % (video_id, attempts, scrub(str(err))), file=sys.stderr)
+            else:
+                processed[video_id] = {
+                    "status": "pending_retry", "attempts": attempts,
+                    "channel": channel_name, "title": video["title"],
+                }
+                print("warning: %s failed (attempt %d/%d), will retry: %s"
+                      % (video_id, attempts, config["max_attempts_per_video"], scrub(str(err))),
+                      file=sys.stderr)
+            continue
+        processed[video_id] = {
+            "status": "summarized", "attempts": prior_attempts + 1,
+            "channel": channel_name, "title": video["title"],
+        }
+        summaries.append({
+            "video_id": video_id, "channel": channel_name, "title": video["title"],
+            "duration_seconds": video["duration_seconds"],
+            "published_at": video["published_at"], "takes": takes, "sent": False,
+        })
+
+
+def run_daily(config, yt_key, gemini_key):
+    """The real daily pipeline: list, classify, budget-select, summarize,
+    persist state. State is saved even if a later step raises, so
+    progress already made is never lost to an unrelated crash."""
+    processed = load_processed()
+    summaries = load_summaries()
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=config["lookback_days"])
+    print("collect — %s UTC, lookback since %s"
+          % (now.strftime("%Y-%m-%d %H:%M"), cutoff.strftime("%Y-%m-%d %H:%M")))
+
+    all_candidates, channel_by_id = [], {}
+    for channel in config["channels"]:
+        try:
+            candidates, skips = collect_channel(channel, config, processed, cutoff, yt_key)
+        except Exception as exc:  # noqa: BLE001 — one channel's failure must not kill the run
+            print("warning: channel %r failed: %s" % (channel["name"], scrub(str(exc))),
+                  file=sys.stderr)
+            continue
+        for video in candidates:
+            channel_by_id[video["video_id"]] = channel["name"]
+        all_candidates.extend(candidates)
+        # skipped_too_long is terminal and must be recorded once so the
+        # weekly email can mention it exactly one time (reported: false
+        # until review.py flips it).
+        for video, reason in skips:
+            if reason == "skipped_too_long" and video["video_id"] not in processed:
+                processed[video["video_id"]] = {
+                    "status": "skipped_too_long", "attempts": 0,
+                    "channel": channel["name"], "title": video["title"], "reported": False,
+                }
+
+    try:
+        selected, deferred, budget_hours, budget_requests = select_within_budgets(
+            all_candidates, config)
+        print("selected %d video(s): %.1fh / %sh video-hours budget, "
+              "~%d / %d requests budget, %d deferred"
+              % (len(selected), budget_hours, config["daily_video_hours_budget"],
+                 budget_requests, config["daily_request_budget"], len(deferred)))
+        process_selected(selected, channel_by_id, config, processed, summaries, gemini_key)
+    finally:
+        save_processed(processed)
+        save_summaries(summaries)
 
 
 def summarize_one(video_id, config):
@@ -168,13 +300,17 @@ def main():
         except gemini_client.GeminiError as exc:
             sys.exit("collect.py: summarization failed: %s" % scrub(str(exc)))
         return
-    if not args.dry_run:
-        sys.exit("collect.py: use --dry-run or --summarize-one; the full "
-                 "summarize loop arrives in Phase 3")
 
-    api_key = os.environ.get("YT_API_KEY")
-    if not api_key:
+    yt_key = os.environ.get("YT_API_KEY")
+    if not yt_key:
         sys.exit("collect.py: YT_API_KEY environment variable is not set")
+
+    if not args.dry_run:
+        gemini_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_key:
+            sys.exit("collect.py: GEMINI_API_KEY environment variable is not set")
+        run_daily(load_config(), yt_key, gemini_key)
+        return
 
     config = load_config()
     processed = load_processed()
@@ -189,7 +325,7 @@ def main():
         # One channel failing (bad handle, API hiccup, malformed payload)
         # must never kill the whole run.
         try:
-            candidates, skips = collect_channel(channel, config, processed, cutoff, api_key)
+            candidates, skips = collect_channel(channel, config, processed, cutoff, yt_key)
         except Exception as exc:  # noqa: BLE001 — deliberate catch-all at the channel boundary
             print("warning: channel %r failed: %s" % (channel["name"], scrub(str(exc))),
                   file=sys.stderr)
@@ -198,7 +334,8 @@ def main():
         per_channel.append((channel, candidates, skips))
         all_candidates.extend(candidates)
 
-    selected, deferred, budget_hours = select_within_budgets(all_candidates, config)
+    selected, deferred, budget_hours, budget_requests = select_within_budgets(
+        all_candidates, config)
     selected_ids = {v["video_id"] for v in selected}
 
     for channel, candidates, skips in per_channel:
@@ -218,9 +355,11 @@ def main():
                                                     fmt_duration(video["duration_seconds"]),
                                                     video["title"]))
 
-    print("\ntotals: %d candidate(s), %d selected (%.1fh of %sh budget), %d deferred"
+    print("\ntotals: %d candidate(s), %d selected (%.1fh of %sh video-hours, "
+          "~%d of %d requests budget), %d deferred"
           % (len(all_candidates), len(selected), budget_hours,
-             config["daily_video_hours_budget"], len(deferred)))
+             config["daily_video_hours_budget"], budget_requests,
+             config["daily_request_budget"], len(deferred)))
 
 
 if __name__ == "__main__":
