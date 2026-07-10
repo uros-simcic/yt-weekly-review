@@ -49,6 +49,10 @@ The main knobs in `config.json`:
 | `chunk_minutes`, `single_request_max_minutes` | long videos are summarized in clipped chunks and merged |
 | `request_pacing_seconds`, `max_attempts_per_video` | rate-limit safety and the retry ceiling |
 
+## Monitoring
+
+A video that permanently fails to summarize, or gets skipped for being too long, shows up as a `::warning::` annotation on the Actions run summary (not just buried in the log), and as a one-line mention in the next weekly email. A run that fails outright (bad config, corrupted state, missing secret) exits non-zero, which GitHub surfaces as a failed run — whether you get emailed about that depends on your own notification settings for the instance repo (Settings → Notifications, or "Watch" the repo), worth checking once.
+
 ## Status
 
 Under active development. The full pipeline runs end to end via manual dispatch: listing, filtering, budget-aware Gemini summarization, the state ledger, and the weekly email. The config schema is stable. Daily/weekly cron triggers are intentionally off until a final hardening pass is done — everything currently runs on demand.
