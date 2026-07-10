@@ -53,6 +53,10 @@ The main knobs in `config.json`:
 
 Under active development. Working today: channel listing, filtering, and budget selection (dry run). In progress: Gemini summarization, the state ledger, and the weekly email. The config schema is stable.
 
+## See also
+
+[AI-daily-harvest](https://github.com/uros-simcic/AI-daily-harvest) — the same idea for AI news: RSS articles summarized by Mistral into one email every morning.
+
 ## License
 
 MIT
