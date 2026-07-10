@@ -1,0 +1,9 @@
+# Personal data never belongs in the engine repo: a real channel list or
+# pipeline state goes in a private instance repo (see README). Ignoring
+# them here makes local test runs with a real config safe by default.
+config.json
+state/
+
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,55 @@
+# Instance workflow: copy this file into your private instance repo at
+# .github/workflows/collect.yml. It checks out the engine (public code)
+# next to your instance (config + state) and runs the collector from the
+# instance root, so config.json and state/ resolve to YOUR files.
+#
+# Cron trigger and state commits arrive in a later phase — for now this
+# is manual dispatch only.
+name: collect
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List and filter only (no Gemini calls)"
+        type: boolean
+        default: true
+
+# Least privilege: reading the repo is all the dry run needs. The state
+# ledger phase raises this to contents: write for the state commits.
+permissions:
+  contents: read
+
+# One pipeline run at a time, queued rather than cancelled: overlapping
+# runs are one of the duplication/token-burn risks the design rules out.
+concurrency:
+  group: yt-weekly-review
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Your instance: config.json + state/
+      - uses: actions/checkout@v4
+      # The engine: code only. Tracking master means instances always run
+      # the latest engine; point `repository:` (and optionally `ref:`) at
+      # your own copy if you'd rather pin.
+      - uses: actions/checkout@v4
+        with:
+          repository: uros-simcic/yt-weekly-review
+          path: engine
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run collector
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python engine/collect.py --dry-run
+          else
+            python engine/collect.py
+          fi

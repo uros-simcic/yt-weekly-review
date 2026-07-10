@@ -1,0 +1,18 @@
+{
+  "lookback_days": 8,
+  "gemini_model": "gemini-3.5-flash",
+  "media_resolution": "low",
+  "fps": 0.5,
+  "chunk_minutes": 50,
+  "single_request_max_minutes": 45,
+  "max_videos_per_run": 8,
+  "daily_video_hours_budget": 6,
+  "max_video_hours": 4,
+  "max_attempts_per_video": 2,
+  "request_pacing_seconds": 8,
+  "channels": [
+    {"name": "Veritasium",    "handle": "veritasium",    "min_minutes": 4},
+    {"name": "Computerphile", "handle": "Computerphile", "min_minutes": 4},
+    {"name": "TED",           "handle": "TED",           "min_minutes": 30}
+  ]
+}
