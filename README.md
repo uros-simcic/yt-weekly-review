@@ -5,10 +5,10 @@ Watches a list of YouTube channels, summarizes every new full episode with the G
 One entry from a weekly email:
 
 ```
-Huberman Lab — "Sleep Toolkit Update" (2h 07m)
-  [12:41] Morning sunlight within 60 min of waking advances circadian phase by ~30 min.
-  [48:03] Caffeine after 14:00 measurably reduced deep-sleep in the cited study.
-  [1:33:12] 0.5 mg melatonin was as effective as 5 mg with fewer next-day effects.
+Matt Wolfe — "How AI Agents Actually Work (Beyond the Hype)" (28m)
+  [03:47] An agent is an LLM in a loop: plan, call a tool, read the result, repeat until a goal check passes.
+  [11:20] MCP standardizes the tool side — one server exposes data and actions to any model, replacing per-app integrations.
+  [19:05] Agent reliability compounds per step: a 95%-reliable step chained 10 times succeeds only ~60% of the time.
 ```
 
 ## How it works

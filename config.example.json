@@ -11,8 +11,6 @@
   "max_attempts_per_video": 2,
   "request_pacing_seconds": 8,
   "channels": [
-    {"name": "Veritasium",    "handle": "veritasium",    "min_minutes": 4},
-    {"name": "Computerphile", "handle": "Computerphile", "min_minutes": 4},
-    {"name": "TED",           "handle": "TED",           "min_minutes": 30}
+    {"name": "Matt Wolfe", "handle": "mreflow", "min_minutes": 4}
   ]
 }
