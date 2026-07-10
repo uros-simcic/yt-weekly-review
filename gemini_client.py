@@ -114,6 +114,17 @@ class GeminiError(Exception):
     """Summarization failed after the single allowed retry."""
 
 
+def _scrub_key(text, api_key):
+    """Redact the API key from a string before it's printed directly by
+    this module (collect.py's own scrub() only covers strings that
+    bubble up as a raised exception; this module's one direct print
+    needs its own, since importing collect here would create a cycle).
+    Nothing today puts the key in error text (it travels only in a
+    request header), but that's an invariant worth defending, not
+    trusting silently."""
+    return text.replace(api_key, "<GEMINI_API_KEY>") if api_key else text
+
+
 def summarize_video(video_id, duration_seconds, config, api_key, debug=False):
     """Summarize one public YouTube video into exactly 3 takes.
 
@@ -156,8 +167,8 @@ def summarize_video(video_id, duration_seconds, config, api_key, debug=False):
             # The chunk requests are the expensive part; a merge outage
             # must not throw their results away (observed live: all four
             # chunks fine, text-only merge repeatedly 503).
-            print("warning: merge failed (%s); using deterministic fallback pick"
-                  % err, file=sys.stderr)
+            print("::warning::merge failed (%s); using deterministic fallback pick"
+                  % _scrub_key(str(err), api_key), file=sys.stderr)
             final = _fallback_pick(candidates)
 
     for take in final:
