@@ -45,13 +45,13 @@ The main knobs in `config.json`:
 | `channels[].min_minutes` | per-channel minimum duration — `4` excludes Shorts, `30` keeps only full podcast episodes |
 | `lookback_days` | how far back the daily run looks; the extra day of overlap means a delayed cron never drops a video |
 | `max_video_hours` | videos longer than this are skipped and mentioned in the weekly email |
-| `max_videos_per_run`, `daily_video_hours_budget` | per-run and per-day processing caps; anything over budget is picked up the next day, oldest first |
+| `max_videos_per_run`, `daily_video_hours_budget`, `daily_request_budget` | per-run and per-day processing caps; anything over budget is picked up the next day, oldest first |
 | `chunk_minutes`, `single_request_max_minutes` | long videos are summarized in clipped chunks and merged |
 | `request_pacing_seconds`, `max_attempts_per_video` | rate-limit safety and the retry ceiling |
 
 ## Status
 
-Under active development. Working today: channel listing, filtering, and budget selection (dry run). In progress: Gemini summarization, the state ledger, and the weekly email. The config schema is stable.
+Under active development. The full pipeline runs end to end via manual dispatch: listing, filtering, budget-aware Gemini summarization, the state ledger, and the weekly email. The config schema is stable. Daily/weekly cron triggers are intentionally off until a final hardening pass is done — everything currently runs on demand.
 
 ## See also
 
