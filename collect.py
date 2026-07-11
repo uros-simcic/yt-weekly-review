@@ -2,15 +2,21 @@
 new full episodes, and update the state ledger.
 
 State lifecycle (state/processed.json, keyed by video id):
+  queued           -> seen as a regular video, deferred by budgets; NOT
+                      terminal. Once queued, a video stays eligible until
+                      processed — budget pressure only ever delays it,
+                      across days or weeks, never drops it.
   pending_retry    -> attempted, failed, attempts < max_attempts_per_video;
                       NOT terminal, resurfaces as a candidate next run.
   summarized       -> terminal; takes appended to state/summaries.json.
   failed_permanent -> terminal; attempts hit max_attempts_per_video.
   skipped_too_long -> terminal; duration > max_video_hours.
-Only the three terminal statuses stop a video from being reprocessed —
-pending_retry exists so a transient failure gets retried tomorrow with
-its attempt count intact instead of being silently dropped or retried
-forever.
+Only the three terminal statuses stop a video from being reprocessed.
+The lookback window gates only ENTRY into the queue (it defines "new
+video" so the first run doesn't inhale each channel's back catalog);
+queued/pending_retry videos remain eligible after their publish date
+drifts outside it, and are rebuilt from the ledger if they fall off the
+channel's 15-item upload listing before their turn comes.
 """
 
 import argparse
@@ -115,7 +121,10 @@ def classify(video, channel, config, processed, cutoff):
     record = processed.get(video["video_id"])
     if record and record.get("status") in TERMINAL_STATUSES:
         return record["status"]
-    if parse_utc(video["published_at"]) < cutoff:
+    # The lookback test applies only to videos with no ledger record:
+    # anything already queued or awaiting retry stays eligible however
+    # old it gets — being over budget must delay a video, never drop it.
+    if record is None and parse_utc(video["published_at"]) < cutoff:
         return "outside lookback window"
     if video["is_live_or_upcoming"]:
         return "live/upcoming, not finished"
@@ -158,26 +167,6 @@ def select_within_budgets(candidates, config):
     return selected, candidates[len(selected):], budget_hours, budget_requests
 
 
-def check_config_budgets(config):
-    """Refuse configs where the largest allowed video could never fit the
-    daily budgets: selection is strictly oldest-first and stops at the
-    first video that busts a budget, so an unrunnable video at the head
-    of the queue would stall the whole pipeline forever."""
-    worst_requests = gemini_client.estimate_request_count(
-        config["max_video_hours"] * 3600, config)
-    if worst_requests > config["daily_request_budget"]:
-        sys.exit("collect.py: config error — a %dh video (max_video_hours) needs "
-                 "%d requests but daily_request_budget is %d; raise the budget "
-                 "or lower max_video_hours"
-                 % (config["max_video_hours"], worst_requests,
-                    config["daily_request_budget"]))
-    if config["max_video_hours"] > config["daily_video_hours_budget"]:
-        sys.exit("collect.py: config error — max_video_hours (%d) exceeds "
-                 "daily_video_hours_budget (%d); such a video could never be "
-                 "scheduled" % (config["max_video_hours"],
-                                config["daily_video_hours_budget"]))
-
-
 def collect_channel(channel, config, processed, cutoff, api_key):
     """List + classify one channel's recent uploads.
     Returns (candidates, skips) where skips is [(video, reason), ...]."""
@@ -207,6 +196,57 @@ def collect_channel(channel, config, processed, cutoff, api_key):
     return candidates, skips
 
 
+def queued_from_ledger(processed, seen_ids):
+    """Rebuild candidates for queued/pending_retry videos that no longer
+    appear in any channel's 15-item upload listing (busy channels roll
+    old entries off before a deferred video's turn can come). Without
+    this sweep, falling off the listing would silently drop a video the
+    never-drop rule promises to process."""
+    restored = []
+    for video_id, record in processed.items():
+        if record.get("status") not in ("queued", "pending_retry"):
+            continue
+        if video_id in seen_ids:
+            continue
+        if not all(k in record for k in ("duration_seconds", "published_at",
+                                         "channel", "title")):
+            # A record written before these fields were stored; while the
+            # video is still in the listing it resurfaces normally — warn
+            # so the gap can't rot invisibly if it has already rolled off.
+            gh_warning("%s is queued but its ledger record predates the "
+                       "rebuild fields; it can only resurface via the "
+                       "channel listing" % video_id)
+            continue
+        restored.append({
+            "video_id": video_id,
+            "title": record["title"],
+            "published_at": record["published_at"],
+            "duration_seconds": record["duration_seconds"],
+            "is_live_or_upcoming": False,
+        })
+    return restored
+
+
+def check_config_budgets(config):
+    """Refuse configs where the largest allowed video could never fit the
+    daily budgets: selection is strictly oldest-first and stops at the
+    first video that busts a budget, so an unrunnable video at the head
+    of the queue would stall the whole pipeline forever."""
+    worst_requests = gemini_client.estimate_request_count(
+        config["max_video_hours"] * 3600, config)
+    if worst_requests > config["daily_request_budget"]:
+        sys.exit("collect.py: config error — a %dh video (max_video_hours) needs "
+                 "%d requests but daily_request_budget is %d; raise the budget "
+                 "or lower max_video_hours"
+                 % (config["max_video_hours"], worst_requests,
+                    config["daily_request_budget"]))
+    if config["max_video_hours"] > config["daily_video_hours_budget"]:
+        sys.exit("collect.py: config error — max_video_hours (%d) exceeds "
+                 "daily_video_hours_budget (%d); such a video could never be "
+                 "scheduled" % (config["max_video_hours"],
+                                config["daily_video_hours_budget"]))
+
+
 def process_selected(selected, channel_by_id, config, processed, summaries, gemini_key):
     """Summarize each selected video, updating processed/summaries in
     place. One video's failure never stops the rest (per-video
@@ -228,14 +268,20 @@ def process_selected(selected, channel_by_id, config, processed, summaries, gemi
             if attempts >= config["max_attempts_per_video"]:
                 processed[video_id] = {
                     "status": "failed_permanent", "attempts": attempts,
-                    "channel": channel_name, "title": video["title"], "reported": False,
+                    "channel": channel_name, "title": video["title"],
+                    "duration_seconds": video["duration_seconds"],
+                    "published_at": video["published_at"], "reported": False,
                 }
                 gh_warning("%s failed permanently after %d attempts: %s"
                           % (video_id, attempts, scrub(str(err))))
             else:
+                # duration/published_at ride along so queued_from_ledger can
+                # rebuild the retry even after it rolls off the listing.
                 processed[video_id] = {
                     "status": "pending_retry", "attempts": attempts,
                     "channel": channel_name, "title": video["title"],
+                    "duration_seconds": video["duration_seconds"],
+                    "published_at": video["published_at"],
                 }
                 print("warning: %s failed (attempt %d/%d), will retry: %s"
                       % (video_id, attempts, config["max_attempts_per_video"], scrub(str(err))),
@@ -284,6 +330,13 @@ def run_daily(config, yt_key, gemini_key):
                     "channel": channel["name"], "title": video["title"], "reported": False,
                 }
 
+    # Videos that fell off their channel's listing while waiting their
+    # turn come back from the ledger and compete oldest-first as usual.
+    restored = queued_from_ledger(processed, {v["video_id"] for v in all_candidates})
+    for video in restored:
+        channel_by_id[video["video_id"]] = processed[video["video_id"]]["channel"]
+    all_candidates.extend(restored)
+
     try:
         selected, deferred, budget_hours, budget_requests = select_within_budgets(
             all_candidates, config)
@@ -291,6 +344,18 @@ def run_daily(config, yt_key, gemini_key):
               "~%d / %d requests budget, %d deferred"
               % (len(selected), budget_hours, config["daily_video_hours_budget"],
                  budget_requests, config["daily_request_budget"], len(deferred)))
+        # Deferral is a promise, not a drop: give every deferred video a
+        # ledger record so its eligibility survives the lookback window
+        # and the listing rolling over.
+        for video in deferred:
+            if video["video_id"] not in processed:
+                processed[video["video_id"]] = {
+                    "status": "queued", "attempts": 0,
+                    "channel": channel_by_id[video["video_id"]],
+                    "title": video["title"],
+                    "duration_seconds": video["duration_seconds"],
+                    "published_at": video["published_at"],
+                }
         process_selected(selected, channel_by_id, config, processed, summaries, gemini_key)
     finally:
         save_processed(processed)
@@ -372,6 +437,9 @@ def main():
         per_channel.append((channel, candidates, skips))
         all_candidates.extend(candidates)
 
+    restored = queued_from_ledger(processed, {v["video_id"] for v in all_candidates})
+    all_candidates.extend(restored)
+
     selected, deferred, budget_hours, budget_requests = select_within_budgets(
         all_candidates, config)
     selected_ids = {v["video_id"] for v in selected}
@@ -392,6 +460,16 @@ def main():
                                                     video["published_at"],
                                                     fmt_duration(video["duration_seconds"]),
                                                     video["title"]))
+
+    if restored:
+        print("\ncarried over from the queue (no longer in channel listings):")
+        for video in restored:
+            verdict = ("WOULD SUMMARIZE" if video["video_id"] in selected_ids
+                       else "deferred to next run (budget)")
+            print("  [%s]  %s  %s  %s  %s" % (verdict, video["video_id"],
+                                              video["published_at"],
+                                              fmt_duration(video["duration_seconds"]),
+                                              video["title"]))
 
     print("\ntotals: %d candidate(s), %d selected (%.1fh of %sh video-hours, "
           "~%d of %d requests budget), %d deferred"
