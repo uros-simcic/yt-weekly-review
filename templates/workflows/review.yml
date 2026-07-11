@@ -1,12 +1,15 @@
 # Instance workflow: copy this file into your private instance repo at
 # .github/workflows/review.yml. Builds and sends the weekly review email
 # from state/summaries.json, then commits the updated sent/reported flags.
-#
-# Manual dispatch only for now — the Sunday 07:00 UTC cron trigger is
-# added once the whole project is complete, as its own explicit change.
 name: review
 
 on:
+  schedule:
+    # Sundays 07:00 UTC. On a cron event there are no inputs, so DRY_RUN
+    # comes through empty and the email really sends. The shared
+    # concurrency group queues this behind Sunday's 05:30 collect run if
+    # that is still going.
+    - cron: "0 7 * * 0"
   workflow_dispatch:
     inputs:
       dry_run:

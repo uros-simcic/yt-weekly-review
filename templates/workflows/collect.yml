@@ -2,12 +2,16 @@
 # .github/workflows/collect.yml. It checks out the engine (public code)
 # next to your instance (config + state) and runs the collector from the
 # instance root, so config.json and state/ resolve to YOUR files.
-#
-# Manual dispatch only for now — the daily cron trigger is added once the
-# whole project is complete, as its own explicit change.
 name: collect
 
 on:
+  schedule:
+    # Daily at 05:30 UTC. On a cron event there are no inputs, so both
+    # DRY_RUN and TEST_VIDEO_ID come through empty and the real pipeline
+    # runs. GitHub cron is best-effort (delays of 5-30 min are normal);
+    # lookback_days overlaps by a day and the ledger dedupes, so a late
+    # or missed run never drops or duplicates a video.
+    - cron: "30 5 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -34,7 +38,10 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Worst-case day: ~13 requests at 60s pacing plus 1-2 min server-side
+    # video processing each can pass 30 minutes; typical days finish in
+    # well under 10.
+    timeout-minutes: 45
     steps:
       # Your instance: config.json + state/
       - uses: actions/checkout@v4
