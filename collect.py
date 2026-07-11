@@ -109,6 +109,14 @@ def parse_utc(iso):
     return dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
 
 
+def parse_start_date(config):
+    """start_date (YYYY-MM-DD) marks the app's launch day: videos
+    published before it are permanently out of scope — the app watches
+    channels from that day on, it never works through back catalogs."""
+    return dt.datetime.fromisoformat(config["start_date"]).replace(
+        tzinfo=dt.timezone.utc)
+
+
 def fmt_duration(seconds):
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
@@ -121,11 +129,15 @@ def classify(video, channel, config, processed, cutoff):
     record = processed.get(video["video_id"])
     if record and record.get("status") in TERMINAL_STATUSES:
         return record["status"]
-    # The lookback test applies only to videos with no ledger record:
+    # These two date tests apply only to videos with no ledger record:
     # anything already queued or awaiting retry stays eligible however
     # old it gets — being over budget must delay a video, never drop it.
-    if record is None and parse_utc(video["published_at"]) < cutoff:
-        return "outside lookback window"
+    if record is None:
+        published = parse_utc(video["published_at"])
+        if published < parse_start_date(config):
+            return "before start_date"
+        if published < cutoff:
+            return "outside lookback window"
     if video["is_live_or_upcoming"]:
         return "live/upcoming, not finished"
     if video["duration_seconds"] < channel["min_minutes"] * 60:
@@ -245,6 +257,11 @@ def check_config_budgets(config):
                  "daily_video_hours_budget (%d); such a video could never be "
                  "scheduled" % (config["max_video_hours"],
                                 config["daily_video_hours_budget"]))
+    try:
+        parse_start_date(config)
+    except (KeyError, ValueError):
+        sys.exit("collect.py: config error — start_date must be a "
+                 "YYYY-MM-DD date (the day the app starts watching)")
 
 
 def process_selected(selected, channel_by_id, config, processed, summaries, gemini_key):
