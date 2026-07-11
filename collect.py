@@ -158,6 +158,26 @@ def select_within_budgets(candidates, config):
     return selected, candidates[len(selected):], budget_hours, budget_requests
 
 
+def check_config_budgets(config):
+    """Refuse configs where the largest allowed video could never fit the
+    daily budgets: selection is strictly oldest-first and stops at the
+    first video that busts a budget, so an unrunnable video at the head
+    of the queue would stall the whole pipeline forever."""
+    worst_requests = gemini_client.estimate_request_count(
+        config["max_video_hours"] * 3600, config)
+    if worst_requests > config["daily_request_budget"]:
+        sys.exit("collect.py: config error — a %dh video (max_video_hours) needs "
+                 "%d requests but daily_request_budget is %d; raise the budget "
+                 "or lower max_video_hours"
+                 % (config["max_video_hours"], worst_requests,
+                    config["daily_request_budget"]))
+    if config["max_video_hours"] > config["daily_video_hours_budget"]:
+        sys.exit("collect.py: config error — max_video_hours (%d) exceeds "
+                 "daily_video_hours_budget (%d); such a video could never be "
+                 "scheduled" % (config["max_video_hours"],
+                                config["daily_video_hours_budget"]))
+
+
 def collect_channel(channel, config, processed, cutoff, api_key):
     """List + classify one channel's recent uploads.
     Returns (candidates, skips) where skips is [(video, reason), ...]."""
@@ -236,6 +256,7 @@ def run_daily(config, yt_key, gemini_key):
     """The real daily pipeline: list, classify, budget-select, summarize,
     persist state. State is saved even if a later step raises, so
     progress already made is never lost to an unrelated crash."""
+    check_config_budgets(config)
     processed = load_processed()
     summaries = load_summaries()
     now = dt.datetime.now(dt.timezone.utc)
@@ -330,6 +351,7 @@ def main():
         return
 
     config = load_config()
+    check_config_budgets(config)  # surface a misconfig in dry runs too
     processed = load_processed()
     now = dt.datetime.now(dt.timezone.utc)
     cutoff = now - dt.timedelta(days=config["lookback_days"])
