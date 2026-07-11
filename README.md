@@ -42,9 +42,10 @@ The main knobs in `config.json`:
 
 | key | meaning |
 | --- | --- |
+| `start_date` | the app's launch day (YYYY-MM-DD): it watches channels from this day on and never works through back catalogs |
 | `channels[].min_minutes` | per-channel minimum duration — `4` excludes Shorts, `30` keeps only full podcast episodes |
-| `lookback_days` | how far back the daily run looks; the extra day of overlap means a delayed cron never drops a video |
-| `max_video_hours` | videos longer than this are skipped and mentioned in the weekly email |
+| `lookback_days` | how far back the daily run looks; the extra day of overlap means a delayed cron never drops a video. Anything a run couldn't process is queued and carried over — budgets delay videos, never drop them |
+| `max_video_hours` | videos longer than this are skipped and mentioned in the weekly email; `8` matches Gemini's own free-tier cap of 8 hours of YouTube video per day, so anything above it couldn't be processed in a day regardless |
 | `max_videos_per_run`, `daily_video_hours_budget`, `daily_request_budget` | per-run and per-day processing caps; anything over budget is picked up the next day, oldest first |
 | `chunk_minutes`, `single_request_max_minutes` | long videos are summarized in clipped chunks and merged |
 | `request_pacing_seconds`, `max_attempts_per_video` | rate-limit safety and the retry ceiling |
@@ -55,7 +56,7 @@ A video that permanently fails to summarize, or gets skipped for being too long,
 
 ## Status
 
-Under active development. The full pipeline runs end to end via manual dispatch: listing, filtering, budget-aware Gemini summarization, the state ledger, and the weekly email. The config schema is stable. Daily/weekly cron triggers are intentionally off until a final hardening pass is done — everything currently runs on demand.
+Complete and running unattended: **collect** daily at 05:30 UTC, **review** every Sunday at 07:00 UTC (GitHub cron is best-effort, so start times can drift by up to ~30 minutes — the design tolerates that). Both workflows also keep `workflow_dispatch` for manual runs and dry runs. The config schema is stable.
 
 ## See also
 
