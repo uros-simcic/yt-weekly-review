@@ -53,7 +53,9 @@ def build_link(video_id, t_seconds=None):
 def gather_pending(config, summaries):
     """Unsent entries grouped by channel in config.json order; within a
     channel, oldest published first. Channels with nothing pending are
-    dropped rather than shown empty."""
+    dropped rather than shown empty. Entries whose channel has since been
+    removed from config.json still go out (appended after the configured
+    channels) — already-summarized work must never be silently lost."""
     order = [c["name"] for c in config["channels"]]
     by_channel = {name: [] for name in order}
     for entry in summaries:
@@ -61,7 +63,8 @@ def gather_pending(config, summaries):
             by_channel.setdefault(entry["channel"], []).append(entry)
     for entries in by_channel.values():
         entries.sort(key=lambda e: e["published_at"])
-    return [(name, by_channel[name]) for name in order if by_channel[name]]
+    removed = sorted(name for name in by_channel if name not in set(order))
+    return [(name, by_channel[name]) for name in order + removed if by_channel[name]]
 
 
 def gather_notes(processed):
