@@ -52,7 +52,7 @@ The main knobs in `config.json`:
 
 ## Monitoring
 
-A video that permanently fails to summarize, or gets skipped for being too long, shows up as a `::warning::` annotation on the Actions run summary (not just buried in the log), and as a one-line mention in the next weekly email. A run that fails outright (bad config, corrupted state, missing secret) exits non-zero, which GitHub surfaces as a failed run — whether you get emailed about that depends on your own notification settings for the instance repo (Settings → Notifications, or "Watch" the repo), worth checking once.
+A video that permanently fails to summarize, or a whole channel failing to list, shows up as a `::warning::` annotation on the Actions run summary (not just buried in the log). A skipped-too-long video is quieter — no annotation, since it's an expected outcome, not a problem — but both cases get a one-line mention in the next weekly email either way. A run that fails outright (bad config, corrupted state, missing secret) exits non-zero, which GitHub surfaces as a failed run — whether you get emailed about that depends on your own notification settings for the instance repo (Settings → Notifications, or "Watch" the repo), worth checking once.
 
 ## Status
 
